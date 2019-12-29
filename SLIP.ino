@@ -69,6 +69,8 @@ class slip
     #define PROTO_TCP    6 
     #define PROTO_UDP    17
 
+    #define SLIP_DEBUG 1
+
 
     uint32_t selfIP;
     SERIALIFACE *IFACE;
@@ -78,11 +80,22 @@ class slip
 
     slip(SERIALIFACE &s, long baud);
     void init(uint32_t ip);
- 
+
+    // low level
     uint16_t iphdr_checksum();
     uint16_t readPacket();
     uint16_t writePacket();
 
+
+    //mid level
+    void handleICMP();
+    void handleUDP();
+    uint8_t stateMachine();
+
+    //high level
+    void *udpCB()[10];
+    void UDPregisterCallback(uint16_t port, void *cb());
+    
     //debug
     void IPrepr(uint32_t ip,char *buff);
     void dump_header();
@@ -168,14 +181,37 @@ uint16_t slip::readPacket()
 
 uint16_t slip::writePacket()
 {
-  uint16_t len = ipPacket->ip_len;
+  uint16_t len = ntohs(ipPacket->ip_len);
 
   ipPacket->ip_ttl = 64;
+
+
+  //END - flushes any garbage on the wire due to noise
+  IFACE->write(END);
+
+
   
   for(uint16_t i=0;i<len;i++)
   {
-    IFACE->write(rPacket[i]);
+    if(rPacket[i]==END)
+    {
+      IFACE->write(ESC);
+      IFACE->write(ESC_END);
+    }
+    else if(rPacket[i]==ESC)
+    {
+      IFACE->write(ESC);
+      IFACE->write(ESC_ESC);
+    }
+    else
+    {
+      IFACE->write((char)rPacket[i]);
+    }
   }
+
+
+  //END the SLIP frame
+  IFACE->write(END);
 }
 
 
@@ -196,17 +232,15 @@ uint16_t slip::iphdr_checksum()
   //header is 20 bytes, hence we need 10 16bit words
   for(uint8_t i=0;i<10;i++)
   {
-    cksum+=p[i];
+    cksum+=ntohs(p[i]);
+    if(cksum>0xffff) cksum -= 0xffff;
   }
 
-  while(cksum> 0xffff)
-  {
-    cksum += (uint16_t)(cksum >> 16);
-  }
 
   //restore original cksum
   ipPacket->ip_hdr_cksum = current_cksum;
-  
+
+  cksum = ~cksum;
   return cksum;
 }
   
@@ -226,7 +260,7 @@ void slip::dump_header()
   char buff[20];
 
   // wall
-  DEBUGGER.println("--------------------------------");
+  DEBUGGER.println("\n--------------------------------IP");
   
   //src
   IPrepr(ntohl(ipPacket->ip_src),buff);
@@ -255,16 +289,178 @@ void slip::dump_header()
   
 
   // wall
-  DEBUGGER.println("--------------------------------");
+  DEBUGGER.println("--------------------------------IP");
+  
+}
+
+
+////////////////////////////// SLIP NETWORK STATEMACHINE /////////////////////////
+
+
+//////////// ICMP ////////////
+
+struct ICMPpacket
+{
+  uint8_t type;
+  uint8_t code;
+  uint16_t cksum;
+
+  // there are some other header fields but we will ignore them
+  uint32_t rest_of_header;
+
+  char data[];  
+  
+}
+__attribute__((packed));
+
+typedef struct ICMPpacket ICMPpacket_t;
+
+void slip::handleICMP()
+{
+  // only ICMP ECHO (ping) requests are handled - 
+
+  ICMPpacket_t *icmpPacket = (ICMPpacket_t*)ipPacket->data;
+
+  #if SLIP_DEBUG
+   // wall
+  DEBUGGER.println("--------------------------------ICMP");
+
+  DEBUGGER.print("TYPE: ");
+  DEBUGGER.println(icmpPacket->type);
+  
+  DEBUGGER.print("CODE: ");
+  DEBUGGER.println(icmpPacket->code);
+
+  
+   // wall
+  DEBUGGER.println("--------------------------------ICMP");
+  #endif
+   
+  //check if echo request - type-8, code-0
+  if(icmpPacket->type == 8 && icmpPacket->code==0)
+  {
+    #if SLIP_DEBUG
+    DEBUGGER.println("Replying to echo (ping) request...");
+    #endif
+    
+      
+   //convert to echo reply - type-0, code-0
+   icmpPacket->type = 0; 
+
+   //ICMP checksum needs to be updated - we add 0x800 as we reduced the type from 8 to 0.
+   // and since checksum is calculated using words (16bits), we may observe that the icmp-type field is
+   // the first 8 bits of the first 16bit word in the ICMP header. Hence we reduced the first word by 0x800
+   // hence the checksum which is (0xffff - sum of words) must increase by 0x800
+   icmpPacket->cksum = htons(ntohs(icmpPacket->cksum) + 0x800);
+   
+
+   //exchange src IP and dest IP
+   uint32_t tempIP = ipPacket->ip_src;
+   ipPacket->ip_src = ipPacket->ip_dst;
+   ipPacket->ip_dst    = tempIP;
+
+   //send the ping reply packet
+   writePacket();
+
+  }
+  
+}
+
+//////////// ICMP ////////////
+
+
+//////////// UDP /////////////
+
+struct UDPpacket
+{
+  uint16_t port_src;
+  uint16_t port_dst;
+  uint16_t len;
+  uint16_t cksum;
+}
+__attribute__((packed));
+
+typedef struct UDPpacket UDPpacket_t;
+
+void slip::handleUDP()
+{
+    // UDP checksum is optional, hence we do not verify/use checksum while receiving/sending UDP packets
+
+  UDPpacket_t *udpPacket = (UDPpacket_t*)ipPacket->data;
+
+  #if SLIP_DEBUG
+   // wall
+  DEBUGGER.println("--------------------------------UDP");
+
+  DEBUGGER.print("SRC: ");
+  DEBUGGER.println(ntohs(udpPacket->port_src));
+  
+  DEBUGGER.print("DEST: ");
+  DEBUGGER.println(ntohs(udpPacket->port_dst));
+
+  uint8_t udpdatalen = ntohs(udpPacket->len) - 8;
+  DEBUGGER.print("UDP DATA LEN: ");
+  DEBUGGER.println(udpdatalen); //UDP header is 8 bytes
+
+  DEBUGGER.println("UDP DATA >>>");
+  uint8_t *udpdata = (uint8_t *)(udpPacket)+8;
+  for(uint8_t i=0;i<udpdatalen;i++) DEBUGGER.write(udpdata[i]);
+  DEBUGGER.println("<<< UDP DATA");
+
+   // wall
+  DEBUGGER.println("--------------------------------UDP");
+  #endif
+
+  
+}
+
+//////////// UDP /////////////
+
+uint8_t slip::stateMachine()
+{
+  int len_of_packet=readPacket();
+  if(len_of_packet ==0 ) return 0;
+
+  
+  #if SLIP_DEBUG
+  dump_header();
+  #endif
+
+  switch (ipPacket->ip_proto)
+  {
+    case PROTO_ICMP:
+    handleICMP();
+    break;
+
+    case PROTO_TCP:
+    #if SLIP_DEBUG
+    DEBUGGER.println("TCP is not supported yet...");
+    break;
+    #endif
+
+    case PROTO_UDP:
+    handleUDP();
+    break;
+
+    default:
+    #if SLIP_DEBUG
+    DEBUGGER.print("PROTO: ");
+    DEBUGGER.print(ipPacket->ip_proto);
+    DEBUGGER.println(" -> This Protocol is not supported yet...");
+    #endif
+    
+    break;
+     
+  }
+  
   
 }
 
 
 
-
 ////////////////
 
-slip network = slip(Serial1,9600);
+slip network = slip(Serial3,9600);
 ///////////////
 
 void setup() {
@@ -280,12 +476,14 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  int z=network.readPacket();
   
-  if(z)
-  {
-    network.dump_header();
-  }
+  
+  network.stateMachine();
+  //network.writePacket();
+  
+  
+  
+ 
   
   
 }
