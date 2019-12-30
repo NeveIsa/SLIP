@@ -93,8 +93,10 @@ class slip
     uint8_t stateMachine();
 
     //high level
-    void *udpCB()[10];
-    void UDPregisterCallback(uint16_t port, void *cb());
+    #define UDP_CB_PORTS_MAX 5
+    uint16_t udpCBports[UDP_CB_PORTS_MAX];
+    void (*udpCB[UDP_CB_PORTS_MAX])();
+    void udpCBregister(uint16_t port, void (*cb)());
     
     //debug
     void IPrepr(uint32_t ip,char *buff);
@@ -117,6 +119,9 @@ void slip::init(uint32_t ip)
   ipPacket = (IPpacket_t*)rPacket;
 
   len_of_last_valid_packet=0; //reset
+
+  //reset the udpCBports
+  for(int i=0;i<UDP_CB_PORTS_MAX;i++) udpCBports[i]=0;
 }
 
 
@@ -411,9 +416,31 @@ void slip::handleUDP()
   DEBUGGER.println("--------------------------------UDP");
   #endif
 
+
+  //check if callback ports are non-empty
+  for(uint8_t i=0;i<UDP_CB_PORTS_MAX;i++)
+  {
+    
+    uint16_t port = ntohs(udpPacket->port_dst);
+    
+    if(port == udpCBports[i]) 
+    {
+      
+      udpCB[i](); 
+    }
+  }
+
   
 }
 
+void slip::udpCBregister(uint16_t port, void (*cb)())
+{
+  uint8_t i;
+  for(i=0;i< UDP_CB_PORTS_MAX && udpCBports[i]!=0; i++);
+
+  udpCBports[i] = port;
+  udpCB[i] = cb;
+}
 //////////// UDP /////////////
 
 uint8_t slip::stateMachine()
@@ -463,6 +490,15 @@ uint8_t slip::stateMachine()
 slip network = slip(Serial3,9600);
 ///////////////
 
+void udp_handler_5000()
+{
+  Serial.println("---> 5000");
+}
+void udp_handler_6000()
+{
+  Serial.println("---> 6000");
+}
+
 void setup() {
   // put your setup code here, to run once
 
@@ -472,6 +508,10 @@ void setup() {
   Serial.begin(115200);
   //pinMode(13,OUTPUT);
 
+
+  network.udpCBregister(5000,udp_handler_5000);
+  network.udpCBregister(6000,udp_handler_6000);
+
 }
 
 void loop() {
@@ -480,8 +520,6 @@ void loop() {
   
   network.stateMachine();
   //network.writePacket();
-  
-  
   
  
   
