@@ -98,6 +98,10 @@ class slip
     uint16_t udpCBports[UDP_CB_PORTS_MAX];
     uint8_t (*udpCB[UDP_CB_PORTS_MAX])(uint8_t *rx, uint8_t rxlen, uint8_t *tx);
     void udpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen, uint8_t *tx));
+
+    //udp client
+    uint8_t udpClient(uint32_t dstip, uint16_t dstport, uint8_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout=0);
+    
     
     uint16_t tcpCBport;
     uint8_t (*tcpCB)(uint8_t *rx, uint8_t rxlen, uint8_t *tx);
@@ -479,6 +483,36 @@ void slip::udpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen
   udpCBports[i] = port;
   udpCB[i] = cb;
 }
+
+// rx_timeout is for how long to wait for response, rx is the buffer where data will be received after sending the tx data
+//setting rx_timeout to zero means we do not want to wait for a response - this is also the default
+uint8_t slip::udpClient(uint32_t dstip, uint16_t dstport, uint8_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout)
+{
+  ipPacket = (IPpacket_t *)rPacket;
+
+  ipPacket->ip_version = 4;
+  ipPacket->ip_header_len = 5; // 5(32bitWords) = 5*32/8 bytes = 20 bytes
+  
+  ipPacket->ip_src = htonl(selfIP);
+  ipPacket->ip_dst = htonl(dstip);
+
+  uint16_t udplen = 8 + txlen;
+  
+  UDPpacket_t *udpPacket = (UDPpacket_t*)malloc(udplen); //8bytes for UDP headers
+
+  udpPacket->port_src = htons(srcport);
+  udpPacket->port_dst = htons(dstport);
+  udpPacket->len = htons(udplen);
+  udpPacket->cksum = 0;
+
+  //copy udp data
+  memcpy(udpPacket->data,txdata,txlen);
+
+  
+}
+
+
+
 //////////// UDP /////////////
 
 //////////// TCP ////////////
@@ -501,7 +535,7 @@ struct TCPpacket
   
   uint8_t flags;
   
-  uint16_t  window_size;
+  uint16_t window_size;
 
   uint16_t cksum;
   uint16_t urgent_pointer;
@@ -574,9 +608,6 @@ uint16_t slip::tcpChecksum()
     if(cksum>0xffff) cksum-=0xffff;
   }
 
-
-
-  
 
   //restore original cksum
   tcpPacket->cksum = got_cksum;
