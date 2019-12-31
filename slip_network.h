@@ -588,13 +588,15 @@ void slip::handleTCP()
   //if not idle for more than 5seconds, reset TCP STATE
   if( (TCP_SERVER_STATE!=TCP_STATE_IDLE) && (millis() - tcp_state_last_idle  > 5000) ) 
   {
+    DEBUGGER.println("Resetting Stale Connection...");
     //reset TCP STATE
     TCP_SERVER_STATE = TCP_STATE_IDLE;
     myseqno=100UL;
     other_host_port=0;
     
   }
-  else
+  
+  else if(TCP_SERVER_STATE==TCP_STATE_IDLE)
   {
     tcp_state_last_idle = millis();
   }
@@ -615,6 +617,7 @@ void slip::handleTCP()
   // CHECK IF GOT RESET FLAG
   if(tcpPacket->flags & RST)
   {
+    DEBUGGER.println("RST");
     //reset the connection
     TCP_SERVER_STATE = TCP_STATE_IDLE;
     myseqno=100UL;
