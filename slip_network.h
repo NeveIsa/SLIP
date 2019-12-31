@@ -100,7 +100,7 @@ class slip
     void udpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen, uint8_t *tx));
 
     //udp client
-    uint8_t udpClient(uint32_t dstip, uint16_t dstport, uint8_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout=0);
+    uint8_t udpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout=0);
     
     
     uint16_t tcpCBport;
@@ -485,20 +485,37 @@ void slip::udpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen
 }
 
 // rx_timeout is for how long to wait for response, rx is the buffer where data will be received after sending the tx data
-//setting rx_timeout to zero means we do not want to wait for a response - this is also the default
-uint8_t slip::udpClient(uint32_t dstip, uint16_t dstport, uint8_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout)
+//setting rx_timeout(in seconds) to zero means we do not want to wait for a response - this is also the default
+uint8_t slip::udpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout)
 {
   ipPacket = (IPpacket_t *)rPacket;
 
-  ipPacket->ip_version = 4;
-  ipPacket->ip_header_len = 5; // 5(32bitWords) = 5*32/8 bytes = 20 bytes
+  //do not know why ip_version and ip_header_len have to be exchanged, some bug in compiler of arduino for struct definition with bit fields? - check ipPacket struct
+  ipPacket->ip_version = 5; //->this behaves as headerlength -  5(32bitWords) = 5*32/8 bytes = 20 bytes
+  ipPacket->ip_header_len = 4; // -> this behaves as version
+
   
+  ipPacket->ip_tos = 0;
+  ipPacket->ip_len = htons(20 + 8 + txlen); //20 IPheader + 8 UDP header + txlen
+  ipPacket->ip_id = htons(108); //set to any id
+  
+  // 0x4000 sets the "do not fragment" flag -> got this after looking at IP packets in wireshark - ingeneral, only this flag is set in most packets
+  ipPacket->ip_flags_and_offset =0x0040; //was producing warning while using htons(0x4000), hence manually set to 0x0040 
+
+  ipPacket->ip_ttl = 64;
+  ipPacket->ip_proto = 17; // Protocol Number for UDP is 17 
+  
+  //set src and dst
   ipPacket->ip_src = htonl(selfIP);
   ipPacket->ip_dst = htonl(dstip);
 
+  //put checksum
+  ipPacket->ip_hdr_cksum = iphdr_checksum(); //set to zero for calculation
+  
+
   uint16_t udplen = 8 + txlen;
   
-  UDPpacket_t *udpPacket = (UDPpacket_t*)malloc(udplen); //8bytes for UDP headers
+  UDPpacket_t *udpPacket = (UDPpacket_t*)ipPacket->data; //8bytes for UDP headers
 
   udpPacket->port_src = htons(srcport);
   udpPacket->port_dst = htons(dstport);
@@ -507,6 +524,28 @@ uint8_t slip::udpClient(uint32_t dstip, uint16_t dstport, uint8_t srcport, uint8
 
   //copy udp data
   memcpy(udpPacket->data,txdata,txlen);
+
+  //send packet
+  writePacket();
+
+  long now=millis();
+  if(rx_timeout)
+  {
+    int len_of_packet=0;
+    do
+    {
+      len_of_packet=readPacket();
+    }
+    while(!len_of_packet && (millis()-now < rx_timeout*1000));
+
+    if(!len_of_packet) return 0; //no data was rxed.
+    
+    uint8_t rxlen = ntohs(udpPacket->len) - 8; //udp has 8 bytes header
+    memcpy(rxdata,udpPacket->data,rxlen);
+
+    return rxlen;
+    
+  }
 
   
 }

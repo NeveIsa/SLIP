@@ -64,6 +64,14 @@ void loop() {
 
   network.stateMachine();
   //network.writePacket();
+  delay(100);
+  uint8_t rx[10];
+  uint32_t destIP = (10UL<<24 | 10UL << 16 | 10UL << 8 | 1);
+  
+  uint8_t rxlen=network.udpClient(destIP, 9000, 2000, (uint8_t*)"Hare Krishna Hare Rama", 22, rx,5);
+
+  for(uint8_t i=0;i<rxlen;i++)Serial.write(rx[i]);
+  Serial.println();
 
 
 
