@@ -74,7 +74,7 @@ class slip
 
     uint32_t selfIP;
     SERIALIFACE *IFACE;
-    uint8_t rPacket[128];
+    uint8_t rPacket[255];
     uint16_t len_of_last_valid_packet;
     IPpacket_t *ipPacket;
 
@@ -458,6 +458,7 @@ void slip::udpCBregister(uint16_t port, void (*cb)())
 #define ACK   0x10
 #define FIN   0x01
 #define SYN   0x02
+#define RST   0x04
 
 struct TCPpacket 
 {
@@ -565,18 +566,40 @@ void slip::tcpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen
 }
 
 
+
+
 void slip::handleTCP()
 {
+  #define MAX_RCV_WINDOW           190
+  
   #define TCP_STATE_IDLE           0
   #define TCP_STATE_SENT_SYN       1
   #define TCP_STATE_SYN_ACKED      2
   #define TCP_STATE_SENT_FIN       3
-
+  
+  static uint8_t TCP_SERVER_STATE = TCP_STATE_IDLE;
+  
+ // static uint32_t lastackno = 0;
   static uint32_t myseqno = 100UL;
 
   static uint16_t other_host_port = 0;
+  static long tcp_state_last_idle = millis();
+
+  //if not idle for more than 5seconds, reset TCP STATE
+  if( (TCP_SERVER_STATE!=TCP_STATE_IDLE) && (millis() - tcp_state_last_idle  > 5000) ) 
+  {
+    //reset TCP STATE
+    TCP_SERVER_STATE = TCP_STATE_IDLE;
+    myseqno=100UL;
+    other_host_port=0;
+    
+  }
+  else
+  {
+    tcp_state_last_idle = millis();
+  }
   
-  static uint8_t TCP_STATE = TCP_STATE_IDLE;
+  
 
   //flag to send packet back after modification
   uint8_t SEND_PACKET_BACK_FLAG=0;
@@ -588,8 +611,27 @@ void slip::handleTCP()
       Serial.println(tcpPacket->cksum);
       Serial.println(tcpChecksum());*/
 
+
+  // CHECK IF GOT RESET FLAG
+  if(tcpPacket->flags & RST)
+  {
+    //reset the connection
+    TCP_SERVER_STATE = TCP_STATE_IDLE;
+    myseqno=100UL;
+    other_host_port=0;
+    
+    tcp_state_last_idle = 0; //this will reset the connection aswell
+
+    return;
+  }
+
+
+  
+
   if((tcpPacket->flags & FIN) &&  other_host_port != tcpPacket->port_src) return;
   if(other_host_port && other_host_port != tcpPacket->port_src) return;
+
+  //Serial.println(ntohs(tcpPacket->port_dst));
   
   if(ntohs(tcpPacket->port_dst)==tcpCBport)
   {
@@ -599,7 +641,7 @@ void slip::handleTCP()
 
 
     // NEW SYN?
-    if( TCP_STATE==TCP_STATE_IDLE && (tcpPacket->flags & SYN)) 
+    if( TCP_SERVER_STATE==TCP_STATE_IDLE && (tcpPacket->flags & SYN)) 
     {
       DEBUGGER.println("SYN");
       //modify and send the same packet back
@@ -607,13 +649,14 @@ void slip::handleTCP()
       tcpPacket->flags |= ACK; //set ack
 
       tcpPacket->ackno = htonl(ntohl(tcpPacket->seqno) + 1); //set ack no to the next expected seqno
+      
 
       tcpPacket->seqno = htonl(myseqno); //set your sending side seqno. - note > acking to the syn is count as 1 byte of data
       
       if(myseqno==100UL)myseqno++; //do this only once, initial myseqno is 100
        
       //we cannot handle tcp segments with data larger than 80 bytes.
-      tcpPacket->window_size = htons(80);
+      tcpPacket->window_size = htons(MAX_RCV_WINDOW);
 
 
       //exchange ports
@@ -625,7 +668,7 @@ void slip::handleTCP()
       //tcpPacket->cksum = tcpChecksum();
 
 
-       TCP_STATE = TCP_STATE_SENT_SYN;
+       TCP_SERVER_STATE = TCP_STATE_SENT_SYN;
 
        SEND_PACKET_BACK_FLAG=1; //write back packet
       
@@ -633,17 +676,17 @@ void slip::handleTCP()
 
     
     //ACK for SYN?
-    else if( TCP_STATE==TCP_STATE_SENT_SYN && (tcpPacket->flags & ACK) )
+    else if( TCP_SERVER_STATE==TCP_STATE_SENT_SYN && (tcpPacket->flags & ACK) )
     {
       DEBUGGER.println("ACK");
 
-      TCP_STATE = TCP_STATE_SYN_ACKED;
+      TCP_SERVER_STATE = TCP_STATE_SYN_ACKED;
       
     }
 
      
     // DATA?
-    else if( !(tcpPacket->flags & FIN) && (TCP_STATE==TCP_STATE_SYN_ACKED) )
+    else if( TCP_SERVER_STATE==TCP_STATE_SYN_ACKED )
     {
       //IP header is 20 bytes each in general - TCP header length field gives length in 32bit words
       uint8_t tcp_hdr_len_in_bytes = tcpPacket->header_len*32/8;
@@ -657,6 +700,9 @@ void slip::handleTCP()
       DEBUGGER.println("<<< TCPDATA");
       #endif
 
+      // If the packet has no data + ACK + !FIN, drop the packet.
+      if(tcpdatalen==0 && (tcpPacket->flags & ACK) && !(tcpPacket->flags & FIN) ) return;
+
       //create ACK and send back
       
       //tcpPacket->ackno = htonl(ntohl(tcpPacket->seqno) + 3); //set ack no to the next expected seqno.
@@ -669,11 +715,20 @@ void slip::handleTCP()
       
       TCPpacket_t *ackPacket = (TCPpacket_t*)calloc(sizeof(TCPpacket_t),1);
       
-      ackPacket->flags = ACK;
+
+      if(tcpPacket->flags & FIN)
+      {
+        ackPacket->flags = ACK | FIN;
+        ackPacket->ackno = htonl(ntohl(tcpPacket->seqno) + tcpdatalen + 1); // +1 for FIN is counted as one data byte
+        TCP_SERVER_STATE=TCP_STATE_SENT_FIN;
+      }
+      else
+      {
+        ackPacket->flags = ACK;
+        ackPacket->ackno = htonl(ntohl(tcpPacket->seqno) + tcpdatalen);
+      }
       
       ackPacket->seqno = ntohl(myseqno); //this is only as long as we have 
-      
-      ackPacket->ackno = htonl(ntohl(tcpPacket->seqno) + tcpdatalen);
 
       ackPacket->header_len = 5; //5*32/8 = 20 bytes
 
@@ -683,23 +738,32 @@ void slip::handleTCP()
       
 
       //we cannot handle tcp segments with data larger than 80 bytes.
-      ackPacket->window_size = htons(80);
+      ackPacket->window_size = htons(MAX_RCV_WINDOW);
 
+      uint8_t *txdata = (uint8_t*) calloc(190,1); //can send maximum 180 bytes -> Note - IP+TCP header max is 60 -> 60+190 = 250 < uint8_t range = 255 
+      uint8_t txlen=0;
       
-      
-      uint8_t *txdata = (uint8_t*) calloc(80,1); //can send maximum 80 bytes
-      
-      //TCP CALLBACK
-      uint8_t txlen = tcpCB(tcpdata,tcpdatalen,txdata); //returns data to  xmit in txdata
-      
-      
+      if(TCP_SERVER_STATE != TCP_STATE_SENT_FIN)
+      {
+        
+        //TCP CALLBACK
+        txlen = tcpCB(tcpdata,tcpdatalen,txdata); //returns data to  xmit in txdata
+        
+       
+      }
+     
+
       //copy ack packet
       memcpy(tcpPacket,ackPacket,sizeof(TCPpacket_t));
-      free(ackPacket);
-
+       
       // copy the tx data into tcp(ack) packet - note the tcp header is 20
       memcpy((uint8_t*)tcpPacket+20, txdata, txlen);
 
+
+      // FREE the memory claimed
+      free(ackPacket);
+      free(txdata);
+  
       
       
       //update myseqno
@@ -719,13 +783,17 @@ void slip::handleTCP()
       
     }
 
-    else if( tcpPacket->flags & FIN )
+    else if(TCP_SERVER_STATE==TCP_STATE_SENT_FIN)
     {
-      DEBUGGER.println("FIN");
+      if( (tcpPacket->flags | ACK) && ntohl(tcpPacket->ackno)==myseqno+1 ) 
+      {
+        TCP_SERVER_STATE=TCP_STATE_IDLE;
 
-      
-
-      
+         // these needs to be initialized as well
+        other_host_port = 0;
+        myseqno=100UL;
+        
+      }
     }
 
 
@@ -763,6 +831,10 @@ uint8_t slip::stateMachine()
 {
   int len_of_packet=readPacket();
   if(len_of_packet ==0 ) return 0;
+
+
+  //parse by setting pointer to IPHeader structure
+  ipPacket = (IPpacket_t*)rPacket;
 
   
   #if SLIP_DEBUG

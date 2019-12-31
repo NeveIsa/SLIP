@@ -1,6 +1,8 @@
 
-#include "slip_network.h"
+#define LEDPIN 13
 
+
+#include "slip_network.h"
 
 
 slip network = slip(Serial2, 115200);
@@ -18,9 +20,22 @@ void udp_handler_5000()
 
 uint8_t tcp_handler(uint8_t *rx, uint8_t rxlen, uint8_t *tx)
 {
-  for(uint8_t i=0;i<rxlen;i++) Serial.write(rx[i]);
-  memcpy(tx,rx,rxlen);
-  return rxlen;
+  //for(uint8_t i=0;i<rxlen;i++) Serial.write(rx[i]);
+
+  uint8_t val = analogRead(A0);
+  String senddata = "HTTP/1.1 200 OK\r\nContent-Length: "+ String(String(val).length()+2) +"\r\n\r\n"+String(val)+"\r\n";
+  int senddatalen = 41+String(val).length();
+  
+  char csenddata[senddatalen+1];
+  senddata.toCharArray(csenddata,senddatalen);
+  memcpy(tx,csenddata,senddatalen);
+
+  Serial.println(csenddata);
+  static int LED_STATE=HIGH;
+  LED_STATE = LED_STATE==HIGH?LOW:HIGH;
+  digitalWrite(LEDPIN,LED_STATE);
+  
+  return senddatalen;
 }
 
 void setup() {
@@ -30,7 +45,7 @@ void setup() {
   network.init(x << 24 | x << 16 | x << 8 | 2);
 
   Serial.begin(115200);
-  //pinMode(13,OUTPUT);
+  pinMode(LEDPIN,OUTPUT);
 
 
   network.udpCBregister(5000, udp_handler_5000);
