@@ -96,8 +96,8 @@ class slip
     //high level
     #define UDP_CB_PORTS_MAX 5
     uint16_t udpCBports[UDP_CB_PORTS_MAX];
-    void (*udpCB[UDP_CB_PORTS_MAX])();
-    void udpCBregister(uint16_t port, void (*cb)());
+    uint8_t (*udpCB[UDP_CB_PORTS_MAX])(uint8_t *rx, uint8_t rxlen, uint8_t *tx);
+    void udpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen, uint8_t *tx));
     
     uint16_t tcpCBport;
     uint8_t (*tcpCB)(uint8_t *rx, uint8_t rxlen, uint8_t *tx);
@@ -392,6 +392,7 @@ struct UDPpacket
   uint16_t port_dst;
   uint16_t len;
   uint16_t cksum;
+  uint8_t data[];
 }
 __attribute__((packed));
 
@@ -414,12 +415,12 @@ void slip::handleUDP()
   DEBUGGER.println(ntohs(udpPacket->port_dst));
 
   uint8_t udpdatalen = ntohs(udpPacket->len) - 8;
+  uint8_t *udpdata = (uint8_t *)udpPacket->data;
   
   DEBUGGER.print("UDP DATA LEN: ");
   DEBUGGER.println(udpdatalen); //UDP header is 8 bytes
 
   DEBUGGER.println("UDP DATA >>>");
-  uint8_t *udpdata = (uint8_t *)(udpPacket)+8;
   for(uint8_t i=0;i<udpdatalen;i++) DEBUGGER.write(udpdata[i]);
   DEBUGGER.println("<<< UDP DATA");
 
@@ -436,14 +437,41 @@ void slip::handleUDP()
     
     if(port == udpCBports[i]) 
     {
-      udpCB[i](); 
+      // 200bytes UDP data + udp header is only 8 bytes, IP is in general 20 bytes -> total = 200 + 28 = 228 < uint8_t capacity
+      uint8_t *tx = (uint8_t*)calloc(200,1); 
+      uint8_t txlen = udpCB[i](udpdata,udpdatalen,tx);
+
+      //write the tx data to the UDP datagram
+      memcpy(udpdata,tx,txlen);
+
+      //UDP header - 8bytes + txlen bytes of data
+      udpPacket->len = htons((uint16_t)(8 + txlen)); 
+
+      //exchange ports
+      uint16_t temp_srcport = udpPacket->port_src;
+      udpPacket->port_src = udpPacket->port_dst;
+      udpPacket->port_dst = temp_srcport;
+
+      //disable UDP checksum
+      udpPacket->cksum = 0;
+
+      //exchange IP - no need to update ip_hdr_checksum as exchanging src and dst IPs dont change cksum 
+      uint32_t temp_ip_src = ipPacket->ip_src;
+      ipPacket->ip_src = ipPacket->ip_dst;
+      ipPacket->ip_dst = temp_ip_src;
+
+      //send the packet
+      writePacket();
+       
+      //free the claimed memory
+      free(tx);
     }
   }
 
   
 }
 
-void slip::udpCBregister(uint16_t port, void (*cb)())
+void slip::udpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen, uint8_t *tx))
 {
   uint8_t i;
   for(i=0;i< UDP_CB_PORTS_MAX && udpCBports[i]!=0; i++);

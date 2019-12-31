@@ -8,9 +8,12 @@
 slip network = slip(Serial2, 115200);
 
 
-void udp_handler_5000()
+uint8_t udp_handler_5000(uint8_t *rx, uint8_t rxlen, uint8_t *tx)
 {
-  Serial.println("---> 5000");
+  
+  //echo
+  memcpy(tx,rx,rxlen);
+  return rxlen; 
 }
 /*void udp_handler_6000()
 {
