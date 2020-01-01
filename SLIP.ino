@@ -27,10 +27,13 @@ uint8_t tcp_handler(uint8_t *rx, uint8_t rxlen, uint8_t *tx)
 
   uint8_t val = analogRead(A0);
   String senddata = "HTTP/1.1 200 OK\r\nContent-Length: "+ String(String(val).length()+2) +"\r\n\r\n"+String(val)+"\r\n";
-  int senddatalen = 41+String(val).length();
+  int senddatalen = senddata.length();
   
   char csenddata[senddatalen+1];
-  senddata.toCharArray(csenddata,senddatalen);
+  senddata.toCharArray(csenddata,senddatalen+1); //toCharArray - 2nd argument is buffer lenght, hence must pass 1 more than string size for toCharArray to add null terminator
+
+  for(uint8_t i=0;i<senddatalen;i++) {Serial.print(i);Serial.print(" -> ");Serial.print((uint8_t)csenddata[i]); Serial.print(" ");Serial.println((uint8_t)senddata[i]);}
+  
   memcpy(tx,csenddata,senddatalen);
 
   Serial.println(csenddata);
@@ -67,11 +70,18 @@ void loop() {
   delay(100);
   uint8_t rx[10];
   uint32_t destIP = (10UL<<24 | 10UL << 16 | 10UL << 8 | 1);
-  
-  uint8_t rxlen=network.udpClient(destIP, 9000, 2000, (uint8_t*)"Hare Krishna Hare Rama", 22, rx,5);
 
-  for(uint8_t i=0;i<rxlen;i++)Serial.write(rx[i]);
-  Serial.println();
+  destIP = 34UL <<24 | 193UL<<16 | 212UL<<8 | 251;
+  destIP = 54UL<<24 | 172UL<<16 | 95UL<<8 | 6;
+  
+  //uint8_t rxlen=network.udpClient(destIP, 9000, 2000, (uint8_t*)"Hare Krishna Hare Rama", 22, rx,0);
+
+  //for(uint8_t i=0;i<rxlen;i++)Serial.write(rx[i]);
+  //Serial.println();
+
+  uint8_t rxlen=network.tcpClient(destIP, 9000, 2000, (uint8_t*)"Hare Krishna Hare Rama", 22, rx,5);
+
+  while(1);
 
 
 

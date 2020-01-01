@@ -108,6 +108,10 @@ class slip
     void tcpCBregister(uint16_t port,uint8_t (*cb)(uint8_t *rx, uint8_t rxlen, uint8_t *tx));
     uint16_t tcpChecksum();
 
+    //tcpClient
+    uint8_t tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout);
+
+
 
     //debug
     void IPrepr(uint32_t ip,char *buff);
@@ -475,6 +479,9 @@ void slip::handleUDP()
   
 }
 
+
+
+/// UDP CLIENT ///
 void slip::udpCBregister(uint16_t port, uint8_t (*cb)(uint8_t *rx, uint8_t rxlen, uint8_t *tx))
 {
   uint8_t i;
@@ -514,7 +521,8 @@ uint8_t slip::udpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint
   
 
   uint16_t udplen = 8 + txlen;
-  
+
+  //// SETUP UDP HEADERS
   UDPpacket_t *udpPacket = (UDPpacket_t*)ipPacket->data; //8bytes for UDP headers
 
   udpPacket->port_src = htons(srcport);
@@ -814,9 +822,9 @@ void slip::handleTCP()
       
       
       
+      //make ack packet
       TCPpacket_t *ackPacket = (TCPpacket_t*)calloc(sizeof(TCPpacket_t),1);
       
-
       if(tcpPacket->flags & FIN)
       {
         ackPacket->flags = ACK | FIN;
@@ -841,7 +849,17 @@ void slip::handleTCP()
       //we cannot handle tcp segments with data larger than 80 bytes.
       ackPacket->window_size = htons(MAX_RCV_WINDOW);
 
-      uint8_t *txdata = (uint8_t*) calloc(190,1); //can send maximum 180 bytes -> Note - IP+TCP header max is 60 -> 60+190 = 250 < uint8_t range = 255 
+
+      
+
+      // Directly writting into TCP packet's (rPacket's) data space before actually reading the TCP packet in tcpCB callback 
+      // -> THIS WAS DONE TO SAVE MEMORY -> could be problematic -> if problems arise, use calloc below 
+      // Also uncomment the memcpy of txdata into TCP packet below
+      // uint8_t *txdata = (uint8_t*) calloc(190,1); //can send maximum 180 bytes -> Note - IP+TCP header max is 60 -> 60+190 = 250 < uint8_t range = 255 
+      
+      uint8_t *txdata = tcpPacket->data;
+
+      
       uint8_t txlen=0;
       
       if(TCP_SERVER_STATE != TCP_STATE_SENT_FIN)
@@ -852,18 +870,18 @@ void slip::handleTCP()
         
        
       }
-     
 
-      //copy ack packet
+      //overwrite tcpPacket using ack packet header -> only 20 bytes
       memcpy(tcpPacket,ackPacket,sizeof(TCPpacket_t));
-       
+      
+      // Directly writting into TCP packet's (rPacket's) data space-> THIS WAS DONE TO SAVE MEMORY
       // copy the tx data into tcp(ack) packet - note the tcp header is 20
-      memcpy((uint8_t*)tcpPacket+20, txdata, txlen);
+      //memcpy((uint8_t*)tcpPacket+20, txdata, txlen);
 
 
       // FREE the memory claimed
       free(ackPacket);
-      free(txdata);
+      
   
       
       
@@ -924,6 +942,128 @@ void slip::handleTCP()
     
   }
  
+}
+
+
+/// TCP CLIENT ///
+uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout)
+{
+  /*
+  #define MAX_RCV_WINDOW           190
+  
+  #define TCP_STATE_IDLE           0
+  #define TCP_STATE_SENT_SYN       1
+  #define TCP_STATE_SYN_ACKED      2
+  #define TCP_STATE_SENT_FIN       3
+  */
+   
+  static uint8_t TCP_CLIENT_STATE=TCP_STATE_IDLE;
+  
+  static uint32_t myseqno = 100;
+  
+  ipPacket = (IPpacket_t *)rPacket;
+
+  //do not know why ip_version and ip_header_len have to be exchanged, some bug in compiler of arduino for struct definition with bit fields? - check IPpacket struct
+  ipPacket->ip_version = 5; //->this behaves as headerlength -  5(32bitWords) = 5*32/8 bytes = 20 bytes
+  ipPacket->ip_header_len = 4; // -> this behaves as version
+
+  
+  ipPacket->ip_tos = 0;
+  ipPacket->ip_len = htons(20 + 20); //20 IPheader + 20 TCP header - this is for the SYN packet
+  ipPacket->ip_id = htons(108); //set to any id
+  
+  // 0x4000 sets the "do not fragment" flag -> got this after looking at IP packets in wireshark - ingeneral, only this flag is set in most packets
+  ipPacket->ip_flags_and_offset =0x0040; //was producing warning while using htons(0x4000), hence manually set to 0x0040 
+
+  ipPacket->ip_ttl = 64;
+  ipPacket->ip_proto = 6; // Protocol Number for TCP is 6
+  
+  //set IP src and dst
+  ipPacket->ip_src = htonl(selfIP);
+  ipPacket->ip_dst = htonl(dstip);
+
+  //put checksum
+  ipPacket->ip_hdr_cksum = iphdr_checksum(); //set to zero for calculation
+
+
+  //// SETUP TCP HEADERS
+  TCPpacket_t *tcpPacket = (TCPpacket_t*)ipPacket->data;
+
+  //set ports
+  tcpPacket->port_src = htons(srcport);
+  tcpPacket->port_dst = htons(dstport);
+
+  tcpPacket->reserved=0;
+  tcpPacket->header_len = 5;   // also called data offset - in 32bit words - 5*32/8 = 20bytes
+
+  
+  tcpPacket->window_size = htons(MAX_RCV_WINDOW);
+
+
+  // *********** send SYN ************ //
+  tcpPacket->seqno = htonl(myseqno);
+  tcpPacket->ackno = 0; //NOTE -> ackno has to be zero when ACK flag is not set. (learnt from packet trace in Wireshark)
+  tcpPacket->flags = SYN; // initiate
+  tcpPacket->cksum = tcpChecksum();
+  writePacket();
+
+
+  //wait for SYN+ACK
+  long now = millis();
+  int len_of_packet=0;
+  do
+  {
+    len_of_packet=readPacket();
+    if(len_of_packet)
+    {
+      //check we got SYN and ACK from the right source IP
+      //we dont check destination IP as if dstIP dont match to selfIP, the packet would have been dropped already
+      if( (tcpPacket->flags & SYN)  && (ntohl(tcpPacket->ackno) == myseqno+1) && (ipPacket->ip_src = htonl(dstip))) 
+      {
+        myseqno++; //inc by one as SYN is counted as 1 data byte
+        break;
+      }
+       
+    }
+  }
+  while( (millis() - now < rx_timeout*1000 )  ); //timeout
+
+  //check if we timedout
+  if(!len_of_packet) return 0;  // timeout - return 0
+
+  DEBUGGER.println("SYN + ACK");
+
+  
+  // *********** send SYN ACK ************ //
+
+  
+  tcpPacket->ackno = htonl(ntohl(tcpPacket->seqno) + 1); //set ackno to 1+ seqno received
+  tcpPacket->flags = ACK; //only set the ACK flag
+  tcpPacket->seqno = htonl(myseqno);
+  
+  //set IP src and dst
+  ipPacket->ip_src = htonl(selfIP);
+  ipPacket->ip_dst = htonl(dstip);
+  
+  
+  //set ports
+  tcpPacket->port_src = htons(srcport);
+  tcpPacket->port_dst = htons(dstport);
+  tcpPacket->cksum = tcpChecksum();
+  writePacket();
+  
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+  
 }
 
 //////////// TCP ////////////
