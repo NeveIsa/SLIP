@@ -67,6 +67,10 @@ void setup() {
 
   network.tcpCBregister(7000, tcp_handler);
 
+
+  //seed Pseudo random number generator
+  randomSeed(analogRead(0));
+
 }
 
 void loop() {
@@ -86,6 +90,8 @@ void loop() {
 
   //for(uint8_t i=0;i<rxlen;i++)Serial.write(rx[i]);
   //Serial.println();
+
+  uint16_t random_src_port = random(1500, 10000);
 
   #define DATA "GET / HTTP/1.1\r\n\r\n"
   uint8_t rxlen=network.tcpClient(destIP, 9000, analogRead(A0), (uint8_t*)DATA, String(DATA).length(), tcpRXcb ,5);

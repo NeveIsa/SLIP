@@ -1045,7 +1045,7 @@ uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint
   //check if we timedout
   if(!len_of_packet) return 0;  // timeout - return 0
 
-  DEBUGGER.println("SYN + ACK");
+  DEBUGGER.println("Got -> SYN + ACK");
 
   
   // *********** send SYN ACK ************ //
@@ -1114,18 +1114,31 @@ now = millis();
 uint16_t this_pkt_rxdata_len = ntohs(ipPacket->ip_len) - 20 - tcpPacket->header_len*32/8;
 uint16_t total_rx_len=0;
 
-uint8_t FIN_RECEIVED_FLAG=0;
+
+
+// FIN_RECEIVED=0 means we did not receive a FIN - most likely because we timedout
+// FIN_RECEIVED=1 means we got a FIN but it has not been handled yet
+// FIN_RECEIVED=2 means we got a FIN but it has already been handled
+uint8_t FIN_RECEIVED=0;
+
+
 //the total response will come in different TCP packets, we need to assemble them
+
+
+//this last_ack_no is going to be mostly used when we receive a FIN
+uint32_t last_ack_no;
+
 while(1)
 {
-  
-  FIN_RECEIVED_FLAG=0;
   
   if(this_pkt_rxdata_len)
   {
     uint8_t *rcvd_data_start =  ipPacket->data + tcpPacket->header_len*32/8;
     
-    // LET external CALLBACK to handle data
+    // LET external CALLBACK to handle data - 
+    // check if the current seqno was already output, if already output, dont output again
+
+    if( ntohl(tcpPacket->seqno) >= last_ack_no )
     rxcallback(rcvd_data_start, this_pkt_rxdata_len);
     
     //update
@@ -1142,9 +1155,35 @@ while(1)
     */
 
 
-      ////// send ACK /////////
-      tcpPacket->ackno = htonl(ntohl(tcpPacket->seqno) + this_pkt_rxdata_len); //set ackno to 1+ seqno received
-      tcpPacket->flags = ACK; //only set the ACK flag
+      ////// send ACK (and FIN when applicable) /////////
+      last_ack_no = ntohl(tcpPacket->seqno) + this_pkt_rxdata_len;
+
+      
+      if(FIN_RECEIVED==0)
+      {
+        //if FIN not present, send only ACK
+        tcpPacket->ackno = htonl(last_ack_no); //set ackno
+        tcpPacket->flags = ACK; //only set the ACK flag
+      }
+      else
+      {
+        //if FIN  present, piggyback FIN on top of the ACK for the data(+FIN) received in this packet
+        // 1. send ACK (for the data received and the FIN received for FIN is accounted as 1 byte of data) and 
+        // 2. send FIN from our side for the 3 way teardown 
+
+        tcpPacket->ackno = htonl(last_ack_no+1); // +1 as FIN is accounted as 1 byte of data
+        tcpPacket->flags = ACK+FIN; //only set the ACK flag
+
+        // set FIN_RECEIVED to 2 to represent FIN has been handled already, as we do not want to handle sending FIN separately again outside 
+        // this while loop since we are piggybacking FIN in this ACK packet for the data(+FIN) received in this packet
+        // CHECK the code after this while loop to understand why
+        
+        FIN_RECEIVED=2; // to prevent duplicate handling of FIN sending after the while loop 
+
+        DEBUGGER.println("Sending -> FIN + ACK");
+        
+      }
+      
       tcpPacket->seqno = htonl(myseqno);
       tcpPacket->window_size = htons(MAX_RCV_WINDOW);
     
@@ -1170,7 +1209,7 @@ while(1)
       
 
       // if FIN was received in this processed data, break
-      if(FIN_RECEIVED_FLAG) break;
+      if(FIN_RECEIVED) break;
 
       this_pkt_rxdata_len=0; //reset - this will cause a new packet to be read in the else block below
   }
@@ -1195,9 +1234,16 @@ while(1)
           //do not break here as FIN packet may be piggybacked with data;
           // the data must be processed before breaking
 
-          //if this packet has non-empty data i.e FIN is piggybacked on data, set the FIN_RECEIVED_FLAG
-          // we will break from the loop after processing the data 
-          if(this_pkt_rxdata_len) FIN_RECEIVED_FLAG=1;
+          //set FIN_RECEIVED variable to FIN received but not handled yet
+          FIN_RECEIVED=1;
+
+          //if this packet has non-empty data i.e FIN is piggybacked on data, we will break from the loop only after processing the data in next iteration of while
+          // hence do not break if this packet contains non-zero bytes of data
+          
+          if(this_pkt_rxdata_len) 
+          {
+            //pass, do not break
+          }
 
           // if no data is present, we must break immediately
           else 
@@ -1216,28 +1262,36 @@ while(1)
 
 
 // *********** close connection by Sending FIN ************ //
-if(FIN_RECEIVED_FLAG)
+
+//check if FIN has not been handled already
+if(FIN_RECEIVED!=2)
 {
-  
+      DEBUGGER.println("Sending -> FIN");
+      tcpPacket->ackno = htonl(last_ack_no+1); // +1 since FIN is considered as 1 data byte
+      tcpPacket->flags = FIN+ACK; //only set the FIN + ACK flag - because we need to acknowledge the FIN received and also denf FIN from our side
+      tcpPacket->seqno = htonl(myseqno);
+      tcpPacket->window_size = htons(MAX_RCV_WINDOW);
+    
+      // set IPpacket - for safety
+      ipPacket = (IPpacket_t*)rPacket;
+       
+      //set IP src and dst
+      ipPacket->ip_src = htonl(selfIP);
+      ipPacket->ip_dst = htonl(dstip);
+
+      //set IP len
+      ipPacket->ip_len = htons(40);
+    
+      //set ports
+      tcpPacket->port_src = htons(srcport);
+      tcpPacket->port_dst = htons(dstport);
+      
+      tcpPacket->cksum = tcpChecksum();
+      ipPacket->ip_hdr_cksum = iphdr_checksum();
+      writePacket();
+
 }
-ipPacket->ip_len = htons(20+20);
-tcpPacket->header_len = 5;
-tcpPacket->flags = FIN;
 
-tcpPacket->cksum=tcpChecksum();
-ipPacket->ip_hdr_cksum = iphdr_checksum();
-//writePacket();
-
-
-
-
-  
-
-  
-
-  
-
-  
   
 }
 
