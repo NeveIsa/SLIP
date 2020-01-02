@@ -1167,10 +1167,12 @@ while(1)
       writePacket();
 
       
-      this_pkt_rxdata_len=0; //reset - this will cause a new packet to be read in the else block below
+      
 
       // if FIN was received in this processed data, break
       if(FIN_RECEIVED_FLAG) break;
+
+      this_pkt_rxdata_len=0; //reset - this will cause a new packet to be read in the else block below
   }
 
   else
@@ -1214,7 +1216,7 @@ while(1)
 
 
 // *********** close connection by Sending FIN ************ //
-if(uint8_t FIN_RECEIVED_FLAG)
+if(FIN_RECEIVED_FLAG)
 {
   
 }
