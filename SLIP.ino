@@ -44,6 +44,14 @@ uint8_t tcp_handler(uint8_t *rx, uint8_t rxlen, uint8_t *tx)
   return senddatalen;
 }
 
+
+
+
+void tcpRXcb(uint8_t *rxdata, uint8_t rxlen)
+{
+  for(uint8_t i=0;i<rxlen;i++)Serial.write(rxdata[i]);
+}
+
 void setup() {
   // put your setup code here, to run once
 
@@ -71,15 +79,16 @@ void loop() {
   uint8_t rx[10];
   uint32_t destIP = (10UL<<24 | 10UL << 16 | 10UL << 8 | 1);
 
-  destIP = 34UL <<24 | 193UL<<16 | 212UL<<8 | 251;
-  destIP = 54UL<<24 | 172UL<<16 | 95UL<<8 | 6;
+  //destIP = 34UL <<24 | 193UL<<16 | 212UL<<8 | 251;
+  //destIP = 54UL<<24 | 172UL<<16 | 95UL<<8 | 6;
   
   //uint8_t rxlen=network.udpClient(destIP, 9000, 2000, (uint8_t*)"Hare Krishna Hare Rama", 22, rx,0);
 
   //for(uint8_t i=0;i<rxlen;i++)Serial.write(rx[i]);
   //Serial.println();
 
-  uint8_t rxlen=network.tcpClient(destIP, 9000, 2000, (uint8_t*)"Hare Krishna Hare Rama", 22, rx,5);
+  #define DATA "GET / HTTP/1.1\r\n\r\n"
+  uint8_t rxlen=network.tcpClient(destIP, 9000, analogRead(A0), (uint8_t*)DATA, String(DATA).length(), tcpRXcb ,5);
 
   while(1);
 

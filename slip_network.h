@@ -46,7 +46,7 @@ struct IPpacket
   uint32_t ip_src;
   uint32_t ip_dst;
 
-  char data[];
+  uint8_t data[];
 }
 __attribute__((packed));
 
@@ -109,7 +109,7 @@ class slip
     uint16_t tcpChecksum();
 
     //tcpClient
-    uint8_t tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout);
+    uint8_t tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, void (*rxcallback)(uint8_t* rxdata, uint8_t rxlen), uint8_t rx_timeout=5);
 
 
 
@@ -205,6 +205,8 @@ uint16_t slip::readPacket()
 uint16_t slip::writePacket()
 {
   uint16_t len = ntohs(ipPacket->ip_len);
+
+  //Serial.println("iplen: " + String(len));
 
   ipPacket->ip_ttl = 64;
 
@@ -946,7 +948,7 @@ void slip::handleTCP()
 
 
 /// TCP CLIENT ///
-uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, uint8_t *rxdata, uint8_t rx_timeout)
+uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint8_t *txdata, uint8_t txlen, void (*rxcallback)(uint8_t* rxdata, uint8_t rxlen), uint8_t rx_timeout)
 {
   /*
   #define MAX_RCV_WINDOW           190
@@ -1014,19 +1016,31 @@ uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint
   do
   {
     len_of_packet=readPacket();
-    if(len_of_packet)
+
+    //check we got SYN and ACK from the right source IP
+    //we dont check destination IP as if dstIP dont match to selfIP, the packet would have been dropped already
+    // also check the dst port
+    if(len_of_packet && (ipPacket->ip_src == htonl(dstip)) && (tcpPacket->port_dst == htons(srcport)))
     {
-      //check we got SYN and ACK from the right source IP
-      //we dont check destination IP as if dstIP dont match to selfIP, the packet would have been dropped already
-      if( (tcpPacket->flags & SYN)  && (ntohl(tcpPacket->ackno) == myseqno+1) && (ipPacket->ip_src = htonl(dstip))) 
+      //DEBUGGER.print("TCP_flags (HEX): ")
+      //DEBUGGER.println(tcpPacket->flags,HEX);
+      
+     
+      if( ((tcpPacket->flags&(SYN+ACK)) == (SYN+ACK))) // && (ipPacket->ip_src == htonl(dstip))) 
       {
         myseqno++; //inc by one as SYN is counted as 1 data byte
         break;
       }
+
+      if( (tcpPacket->flags & RST)   )
+      {
+        DEBUGGER.println("Got RST. Is port ->" +  String(dstport) + " open?");
+        return 0;
+      }
        
     }
   }
-  while( (millis() - now < rx_timeout*1000 )  ); //timeout
+  while( (millis() - now < 2000 )  ); //timeout
 
   //check if we timedout
   if(!len_of_packet) return 0;  // timeout - return 0
@@ -1036,25 +1050,184 @@ uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint
   
   // *********** send SYN ACK ************ //
 
-  
   tcpPacket->ackno = htonl(ntohl(tcpPacket->seqno) + 1); //set ackno to 1+ seqno received
   tcpPacket->flags = ACK; //only set the ACK flag
   tcpPacket->seqno = htonl(myseqno);
+  tcpPacket->window_size = htons(MAX_RCV_WINDOW);
+
   
   //set IP src and dst
   ipPacket->ip_src = htonl(selfIP);
   ipPacket->ip_dst = htonl(dstip);
-  
-  
+
+  //set IP len
+  ipPacket->ip_len = htons(40);
+
   //set ports
   tcpPacket->port_src = htons(srcport);
   tcpPacket->port_dst = htons(dstport);
+  
   tcpPacket->cksum = tcpChecksum();
+  ipPacket->ip_hdr_cksum = iphdr_checksum();
   writePacket();
+
+
+ // *********** send DATA ************ //
+ 
+ // most headers are already set in the send SYN ACK stage, just modify the headers relevant to adding TCP data 
+ memcpy(tcpPacket->data,txdata,txlen);
+
+ //these 2 fields (ip_len and tcp_header_len) were most likely over written in the SYN+ACK packet sent by the TCP Server - modding these fields in the send SYN ACK phase seemed not to work
+ ipPacket->ip_len = htons(20 + 20 + txlen); // 20IPhdr + 20TCPhdr + data
+ tcpPacket->header_len = 5; 
+ tcpPacket->window_size = htons(MAX_RCV_WINDOW);
+ 
   
-  
+ ipPacket->ip_hdr_cksum = iphdr_checksum();
+ tcpPacket->cksum = tcpChecksum(); //note - tcpChecksum() uses ipPacket->ip_len, hence ipPacket->ip_len must be set before calling tcpCkechsum()
+ writePacket();
+
+ myseqno+=txlen; //update myseqno
 
   
+// *********** wait for ACK ************ //
+now = millis();
+do
+{
+   len_of_packet=readPacket();
+   if(len_of_packet && (ipPacket->ip_src == htonl(dstip)) && (tcpPacket->port_dst == htons(srcport)) && tcpPacket->ackno == htonl(myseqno))
+   {
+    DEBUGGER.println("ACK received for TX-ed data");
+    break;
+   }
+}
+while( (millis() - now < 2000 )  ); //timeout
+
+// *********** wait for DATA ************ //
+if(rx_timeout==0) return 0; //if we do not wish to read data
+
+// check if the previous packet which contained ACK also contained data
+// if not, wait till timeout to receive the data packet
+
+
+now = millis();
+uint16_t this_pkt_rxdata_len = ntohs(ipPacket->ip_len) - 20 - tcpPacket->header_len*32/8;
+uint16_t total_rx_len=0;
+
+uint8_t FIN_RECEIVED_FLAG=0;
+//the total response will come in different TCP packets, we need to assemble them
+while(1)
+{
+  
+  FIN_RECEIVED_FLAG=0;
+  
+  if(this_pkt_rxdata_len)
+  {
+    uint8_t *rcvd_data_start =  ipPacket->data + tcpPacket->header_len*32/8;
+    
+    // LET external CALLBACK to handle data
+    rxcallback(rcvd_data_start, this_pkt_rxdata_len);
+    
+    //update
+    total_rx_len +=this_pkt_rxdata_len;
+
+    
+    //DEBUGGER.println("GOT TCP DATA -> " + String(this_pkt_rxdata_len) + " bytes");
+    /* DEBUG
+     *  
+    for(uint8_t i=0;i<this_pkt_rxdata_len;i++)
+    {
+      DEBUGGER.write(rcvd_data_start[i]);
+    }
+    */
+
+
+      ////// send ACK /////////
+      tcpPacket->ackno = htonl(ntohl(tcpPacket->seqno) + this_pkt_rxdata_len); //set ackno to 1+ seqno received
+      tcpPacket->flags = ACK; //only set the ACK flag
+      tcpPacket->seqno = htonl(myseqno);
+      tcpPacket->window_size = htons(MAX_RCV_WINDOW);
+    
+      // set IPpacket - for safety
+      ipPacket = (IPpacket_t*)rPacket;
+       
+      //set IP src and dst
+      ipPacket->ip_src = htonl(selfIP);
+      ipPacket->ip_dst = htonl(dstip);
+
+      //set IP len
+      ipPacket->ip_len = htons(40);
+    
+      //set ports
+      tcpPacket->port_src = htons(srcport);
+      tcpPacket->port_dst = htons(dstport);
+      
+      tcpPacket->cksum = tcpChecksum();
+      ipPacket->ip_hdr_cksum = iphdr_checksum();
+      writePacket();
+
+      
+      this_pkt_rxdata_len=0; //reset - this will cause a new packet to be read in the else block below
+
+      // if FIN was received in this processed data, break
+      if(FIN_RECEIVED_FLAG) break;
+  }
+
+  else
+  {
+    //read next packet
+    len_of_packet=readPacket();
+    if(len_of_packet)
+    {
+       // filter the right packets
+       if( (ipPacket->ip_src == htonl(dstip)) && (tcpPacket->port_dst == htons(srcport)) );
+       else continue;
+       
+       this_pkt_rxdata_len = ntohs(ipPacket->ip_len) - 20 - tcpPacket->header_len*32/8;
+
+       //if FIN is received, then it means no more data to arrive, hence break after processing the data piggybacked, if any
+        if(tcpPacket->flags & FIN)
+        {
+          //DEBUGGER.println("got FIN -> All data received");
+          //Serial.println(this_pkt_rxdata_len);
+          //do not break here as FIN packet may be piggybacked with data;
+          // the data must be processed before breaking
+
+          //if this packet has non-empty data i.e FIN is piggybacked on data, set the FIN_RECEIVED_FLAG
+          // we will break from the loop after processing the data 
+          if(this_pkt_rxdata_len) FIN_RECEIVED_FLAG=1;
+
+          // if no data is present, we must break immediately
+          else 
+          {
+            DEBUGGER.println("\n got FIN... Total TCP data received: " + String(total_rx_len) + " bytes");
+            break;
+          }
+        }
+    }
+  }
+
+  
+  if(millis() - now > rx_timeout *1000) break;
+}
+
+
+
+// *********** close connection by Sending FIN ************ //
+if(uint8_t FIN_RECEIVED_FLAG)
+{
+  
+}
+ipPacket->ip_len = htons(20+20);
+tcpPacket->header_len = 5;
+tcpPacket->flags = FIN;
+
+tcpPacket->cksum=tcpChecksum();
+ipPacket->ip_hdr_cksum = iphdr_checksum();
+//writePacket();
+
+
+
 
   
 
