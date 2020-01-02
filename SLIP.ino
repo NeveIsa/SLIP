@@ -8,7 +8,7 @@
 slip network = slip(Serial2, 115200);
 
 
-uint8_t udp_handler_5000(uint8_t *rx, uint8_t rxlen, uint8_t *tx)
+uint8_t udp_echo_server(uint8_t *rx, uint8_t rxlen, uint8_t *tx)
 {
   
   //echo
@@ -32,7 +32,7 @@ uint8_t tcp_handler(uint8_t *rx, uint8_t rxlen, uint8_t *tx)
   char csenddata[senddatalen+1];
   senddata.toCharArray(csenddata,senddatalen+1); //toCharArray - 2nd argument is buffer lenght, hence must pass 1 more than string size for toCharArray to add null terminator
 
-  for(uint8_t i=0;i<senddatalen;i++) {Serial.print(i);Serial.print(" -> ");Serial.print((uint8_t)csenddata[i]); Serial.print(" ");Serial.println((uint8_t)senddata[i]);}
+  //for(uint8_t i=0;i<senddatalen;i++) {Serial.print(i);Serial.print(" -> ");Serial.print((uint8_t)csenddata[i]); Serial.print(" ");Serial.println((uint8_t)senddata[i]);}
   
   memcpy(tx,csenddata,senddatalen);
 
@@ -62,9 +62,8 @@ void setup() {
   pinMode(LEDPIN,OUTPUT);
 
 
-  network.udpCBregister(5000, udp_handler_5000);
-  //network.udpCBregister(6000, udp_handler_6000);
-
+  network.udpCBregister(5000, udp_echo_server);
+  
   network.tcpCBregister(7000, tcp_handler);
 
 
@@ -77,7 +76,7 @@ void loop() {
   // put your main code here, to run repeatedly:
 
 
-  network.stateMachine();
+  
   //network.writePacket();
   delay(100);
   uint8_t rx[10];
@@ -96,7 +95,7 @@ void loop() {
   #define DATA "GET / HTTP/1.1\r\n\r\n"
   uint8_t rxlen=network.tcpClient(destIP, 9000, analogRead(A0), (uint8_t*)DATA, String(DATA).length(), tcpRXcb ,5);
 
-  while(1);
+  while(1)network.stateMachine();
 
 
 
