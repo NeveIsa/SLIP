@@ -59,9 +59,9 @@ network.init(myIP);
  - `network.tcpCBregister(7000, tcp_server);`
  - tcpServer is the callback when data arrives on the TCP port 7000
  - tcpServer takes 3 parameters and returns a uint8_t value
-	- 1. uint8_t* rx -> pointer to the data(web request if we are implementing an HTTP Server) received
-	- 2. uint8_t rxlen -> length in bytes of received data(request)
-	- 3. uint8_t* tx -> pointer to data that has to be sent back (response)
+	1. uint8_t* rx -> pointer to the data(web request if we are implementing an HTTP Server) received
+	2. uint8_t rxlen -> length in bytes of received data(request)
+	3. uint8_t* tx -> pointer to data that has to be sent back (response)
 	- and tcpServer returns txlen -> length in bytes of the data (response) to be sent back 
  - Check the example code in the .ino file to get more details about how to construct an HTTP Response.
 
@@ -79,13 +79,13 @@ network.init(myIP);
 ```
  - udpClient takes 7 Parameters and returns the number of bytes returned from the server
   
-	- 1 -> uint32_t destination IP
-	- 2 -> uint16_t destination Port
-	- 3 -> uint16_t source Port
-	- 4 -> uint8_t* txdata
-	- 5 -> uint8_t  txlen
-	- 6 -> uint8_t* rxdata = data received
-	- 7 -> uint8_t  rx_timeout in seconds [ 0 to send txdata and return immediately]
+	1. uint32_t destination IP
+	2. uint16_t destination Port
+	3. uint16_t source Port
+	4. uint8_t* txdata
+	5. uint8_t  txlen
+	6. uint8_t* rxdata = data received
+	7. uint8_t  rx_timeout in seconds [ 0 to send txdata and return immediately]
 	- returns -> rxlen = length of data received
  
  - Check the code in the ino example file to get some more details
