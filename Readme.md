@@ -5,7 +5,8 @@
 
 ![](slip.png)
 
-[More details on SLIP](http://216.92.67.219/free/t_SerialLineInternetProtocolSLIP-2.htm)
+
+[---> More details on SLIP](http://216.92.67.219/free/t_SerialLineInternetProtocolSLIP-2.htm)
 
 
 	|Arduino(10.10.10.2)| <===========SLIP(USB-to-Serial Connector)===========>  |Linux Host(10.10.10.1)|
