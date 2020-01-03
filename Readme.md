@@ -4,6 +4,7 @@
 ##### How SLIP works --->
 
 ![](slip.png)
+
 [More details on SLIP](http://216.92.67.219/free/t_SerialLineInternetProtocolSLIP-2.htm)
 
 
