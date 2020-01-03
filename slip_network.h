@@ -26,6 +26,11 @@
 
 
 
+/*---------------- DEBUG ------------------- */
+ #define SLIP_DEBUG 1
+ #define DEBUGGER Serial
+
+/*---------------- DEBUG ------------------- */
 
 //////////////// SLIP STRUCTS //////////////////////
 
@@ -58,7 +63,7 @@ typedef struct IPpacket IPpacket_t;
 class slip
 {
   #define SERIALIFACE HardwareSerial
-  #define DEBUGGER Serial
+  
   public:
     #define END       0xC0
     #define ESC       0xDB
@@ -68,8 +73,6 @@ class slip
     #define PROTO_ICMP   1
     #define PROTO_TCP    6 
     #define PROTO_UDP    17
-
-    #define SLIP_DEBUG 1
 
 
     uint32_t selfIP;
@@ -280,20 +283,29 @@ void slip::IPrepr(uint32_t ip, char* buf)
 
 void slip::dump_header()
 {
+  #if SLIP_DEBUG
   if(!len_of_last_valid_packet) DEBUGGER.println("Last IP packet is invalid...");
+  #endif
 
   char buff[20];
 
   // wall
+  #if SLIP_DEBUG
   DEBUGGER.println("\n--------------------------------IP");
+  #endif
   
   //src
   IPrepr(ntohl(ipPacket->ip_src),buff);
+  #if SLIP_DEBUG
   DEBUGGER.print("SRC: "); DEBUGGER.println(buff);
+  #endif
 
    //dst
   IPrepr(ntohl(ipPacket->ip_dst),buff);
+  #if SLIP_DEBUG
+  
   DEBUGGER.print("DST: "); DEBUGGER.println(buff);
+  
 
   //len
   DEBUGGER.print("LEN: ");
@@ -315,6 +327,8 @@ void slip::dump_header()
 
   // wall
   DEBUGGER.println("--------------------------------IP");
+
+  #endif
   
 }
 
@@ -414,6 +428,9 @@ void slip::handleUDP()
 
   UDPpacket_t *udpPacket = (UDPpacket_t*)ipPacket->data;
 
+  uint8_t udpdatalen = ntohs(udpPacket->len) - 8;
+  uint8_t *udpdata = (uint8_t *)udpPacket->data;
+
   #if SLIP_DEBUG
    // wall
   DEBUGGER.println("--------------------------------UDP");
@@ -424,8 +441,7 @@ void slip::handleUDP()
   DEBUGGER.print("DEST: ");
   DEBUGGER.println(ntohs(udpPacket->port_dst));
 
-  uint8_t udpdatalen = ntohs(udpPacket->len) - 8;
-  uint8_t *udpdata = (uint8_t *)udpPacket->data;
+
   
   DEBUGGER.print("UDP DATA LEN: ");
   DEBUGGER.println(udpdatalen); //UDP header is 8 bytes
@@ -455,7 +471,10 @@ void slip::handleUDP()
       memcpy(udpdata,tx,txlen);
 
       //UDP header - 8bytes + txlen bytes of data
-      udpPacket->len = htons((uint16_t)(8 + txlen)); 
+      udpPacket->len = htons((uint16_t)(8 + txlen));
+
+      //SET IPpacket length
+      ipPacket->ip_len = htons(20 + ntohs( udpPacket->len)); // IP header is 20 bytes
 
       //exchange ports
       uint16_t temp_srcport = udpPacket->port_src;
@@ -469,6 +488,9 @@ void slip::handleUDP()
       uint32_t temp_ip_src = ipPacket->ip_src;
       ipPacket->ip_src = ipPacket->ip_dst;
       ipPacket->ip_dst = temp_ip_src;
+
+      //set IP header Cksum
+      ipPacket->ip_hdr_cksum = iphdr_checksum();
 
       //send the packet
       writePacket();
@@ -696,7 +718,10 @@ void slip::handleTCP()
   //if not idle for more than 5seconds, reset TCP STATE
   if( (TCP_SERVER_STATE!=TCP_STATE_IDLE) && (millis() - tcp_state_last_idle  > 5000) ) 
   {
+    #if SLIP_DEBUG
     DEBUGGER.println("Resetting Stale Connection...");
+    #endif
+    
     //reset TCP STATE
     TCP_SERVER_STATE = TCP_STATE_IDLE;
     myseqno=100UL;
@@ -725,7 +750,10 @@ void slip::handleTCP()
   // CHECK IF GOT RESET FLAG
   if(tcpPacket->flags & RST)
   {
+    #if SLIP_DEBUG
     DEBUGGER.println("RST");
+    #endif
+    
     //reset the connection
     TCP_SERVER_STATE = TCP_STATE_IDLE;
     myseqno=100UL;
@@ -754,7 +782,10 @@ void slip::handleTCP()
     // NEW SYN?
     if( TCP_SERVER_STATE==TCP_STATE_IDLE && (tcpPacket->flags & SYN)) 
     {
-      DEBUGGER.println("SYN");
+       #if SLIP_DEBUG
+       DEBUGGER.println("SYN");
+       #endif
+       
       //modify and send the same packet back
       
       tcpPacket->flags |= ACK; //set ack
@@ -789,7 +820,9 @@ void slip::handleTCP()
     //ACK for SYN?
     else if( TCP_SERVER_STATE==TCP_STATE_SENT_SYN && (tcpPacket->flags & ACK) )
     {
+      #if SLIP_DEBUG
       DEBUGGER.println("ACK");
+      #endif
 
       TCP_SERVER_STATE = TCP_STATE_SYN_ACKED;
       
@@ -1034,7 +1067,10 @@ uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint
 
       if( (tcpPacket->flags & RST)   )
       {
+        #if SLIP_DEBUG
         DEBUGGER.println("Got RST. Is port ->" +  String(dstport) + " open?");
+        #endif
+        
         return 0;
       }
        
@@ -1045,8 +1081,9 @@ uint8_t slip::tcpClient(uint32_t dstip, uint16_t dstport, uint16_t srcport, uint
   //check if we timedout
   if(!len_of_packet) return 0;  // timeout - return 0
 
+  #if SLIP_DEBUG
   DEBUGGER.println("Got -> SYN + ACK");
-
+  #endif
   
   // *********** send SYN ACK ************ //
 
@@ -1097,7 +1134,10 @@ do
    len_of_packet=readPacket();
    if(len_of_packet && (ipPacket->ip_src == htonl(dstip)) && (tcpPacket->port_dst == htons(srcport)) && tcpPacket->ackno == htonl(myseqno))
    {
+    #if SLIP_DEBUG
     DEBUGGER.println("ACK received for TX-ed data");
+    #endif
+    
     break;
    }
 }
@@ -1180,7 +1220,9 @@ while(1)
         
         FIN_RECEIVED=2; // to prevent duplicate handling of FIN sending after the while loop 
 
+        #if SLIP_DEBUG
         DEBUGGER.println("Sending -> FIN + ACK");
+        #endif
         
       }
       
@@ -1248,7 +1290,10 @@ while(1)
           // if no data is present, we must break immediately
           else 
           {
+            #if SLIP_DEBUG
             DEBUGGER.println("\n got FIN... Total TCP data received: " + String(total_rx_len) + " bytes");
+            #endif
+            
             break;
           }
         }
@@ -1266,7 +1311,10 @@ while(1)
 //check if FIN has not been handled already
 if(FIN_RECEIVED!=2)
 {
+      #if SLIP_DEBUG
       DEBUGGER.println("Sending -> FIN");
+      #endif
+      
       tcpPacket->ackno = htonl(last_ack_no+1); // +1 since FIN is considered as 1 data byte
       tcpPacket->flags = FIN+ACK; //only set the FIN + ACK flag - because we need to acknowledge the FIN received and also denf FIN from our side
       tcpPacket->seqno = htonl(myseqno);
